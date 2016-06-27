@@ -1,0 +1,7 @@
+# vmprof utilities
+
+## vmprof-flamegraph.py
+
+Convert vmprof profile data into flamegraph format [1].
+
+[1] http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html
