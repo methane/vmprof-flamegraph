@@ -26,4 +26,4 @@ Example
 
 Building Python document with Sphinx.
 
-.. image:: examples/sphinx-prof.svg
+https://github.com/methane/vmprof-flamegraph/blob/master/examples/sphinx-prof.svg
