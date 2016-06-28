@@ -1,0 +1,1319 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="898" onload="init(evt)" viewBox="0 0 1200 898" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) { 
+		details = document.getElementById("details").firstChild; 
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		if (func != null)
+			func = func.replace(/ .*/, "");
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+		
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+		
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+		
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) { 
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+		
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) { 
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+		
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+		
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+		
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}	
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="898.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="881" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="881" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (197 samples, 1.57%)</title><rect x="775.8" y="369" width="18.5" height="15.0" fill="rgb(246,10,17)" rx="2" ry="2" />
+<text text-anchor="" x="778.84" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_initial_transitions:statemachine.py:973 (168 samples, 1.34%)</title><rect x="800.2" y="305" width="15.8" height="15.0" fill="rgb(214,67,27)" rx="2" ry="2" />
+<text text-anchor="" x="803.23" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>underline:states.py:2689 (1,596 samples, 12.69%)</title><rect x="585.0" y="337" width="149.7" height="15.0" fill="rgb(209,215,20)" rx="2" ry="2" />
+<text text-anchor="" x="587.99" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >underline:states.py..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2729 (341 samples, 2.71%)</title><rect x="553.0" y="337" width="32.0" height="15.0" fill="rgb(213,157,26)" rx="2" ry="2" />
+<text text-anchor="" x="555.99" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >te..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (155 samples, 1.23%)</title><rect x="538.4" y="225" width="14.6" height="15.0" fill="rgb(220,35,24)" rx="2" ry="2" />
+<text text-anchor="" x="541.45" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (179 samples, 1.42%)</title><rect x="485.7" y="321" width="16.8" height="15.0" fill="rgb(227,200,53)" rx="2" ry="2" />
+<text text-anchor="" x="488.72" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (729 samples, 5.80%)</title><rect x="825.2" y="289" width="68.4" height="15.0" fill="rgb(221,36,32)" rx="2" ry="2" />
+<text text-anchor="" x="828.19" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:__i..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (3,136 samples, 24.94%)</title><rect x="895.8" y="369" width="294.2" height="15.0" fill="rgb(241,31,6)" rx="2" ry="2" />
+<text text-anchor="" x="898.75" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.py:184</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2602 (809 samples, 6.43%)</title><rect x="817.7" y="353" width="75.9" height="15.0" fill="rgb(243,0,21)" rx="2" ry="2" />
+<text text-anchor="" x="820.68" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>paragraph:states.py:402 (269 samples, 2.14%)</title><rect x="1076.7" y="65" width="25.2" height="15.0" fill="rgb(219,75,52)" rx="2" ry="2" />
+<text text-anchor="" x="1079.65" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:131 (226 samples, 1.80%)</title><rect x="515.8" y="289" width="21.2" height="15.0" fill="rgb(209,96,25)" rx="2" ry="2" />
+<text text-anchor="" x="518.83" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (4,845 samples, 38.53%)</title><rect x="735.4" y="545" width="454.6" height="15.0" fill="rgb(236,151,47)" rx="2" ry="2" />
+<text text-anchor="" x="738.40" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:states.py:324</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (258 samples, 2.05%)</title><rect x="962.2" y="97" width="24.2" height="15.0" fill="rgb(253,144,44)" rx="2" ry="2" />
+<text text-anchor="" x="965.18" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>next_node:nodes.py:282 (505 samples, 4.02%)</title><rect x="306.8" y="609" width="47.4" height="15.0" fill="rgb(253,223,8)" rx="2" ry="2" />
+<text text-anchor="" x="309.78" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >next..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (260 samples, 2.07%)</title><rect x="1051.1" y="65" width="24.4" height="15.0" fill="rgb(209,3,1)" rx="2" ry="2" />
+<text text-anchor="" x="1054.13" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_state:statemachine.py:468 (158 samples, 1.26%)</title><rect x="987.7" y="257" width="14.8" height="15.0" fill="rgb(235,46,37)" rx="2" ry="2" />
+<text text-anchor="" x="990.70" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (366 samples, 2.91%)</title><rect x="1155.7" y="193" width="34.3" height="15.0" fill="rgb(222,35,36)" rx="2" ry="2" />
+<text text-anchor="" x="1158.66" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ne..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (209 samples, 1.66%)</title><rect x="1135.8" y="177" width="19.6" height="15.0" fill="rgb(240,206,10)" rx="2" ry="2" />
+<text text-anchor="" x="1138.77" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>paragraph:states.py:402 (296 samples, 2.35%)</title><rect x="557.2" y="321" width="27.8" height="15.0" fill="rgb(246,168,21)" rx="2" ry="2" />
+<text text-anchor="" x="560.21" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (941 samples, 7.48%)</title><rect x="1013.6" y="161" width="88.3" height="15.0" fill="rgb(223,31,5)" rx="2" ry="2" />
+<text text-anchor="" x="1016.60" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:__init..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (1,867 samples, 14.85%)</title><rect x="926.7" y="337" width="175.2" height="15.0" fill="rgb(231,183,21)" rx="2" ry="2" />
+<text text-anchor="" x="929.71" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_markup:states..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (4,830 samples, 38.41%)</title><rect x="736.8" y="513" width="453.2" height="15.0" fill="rgb(239,110,7)" rx="2" ry="2" />
+<text text-anchor="" x="739.80" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_parse:states.py:257</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (193 samples, 1.53%)</title><rect x="1137.3" y="145" width="18.1" height="15.0" fill="rgb(207,112,44)" rx="2" ry="2" />
+<text text-anchor="" x="1140.27" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:131 (161 samples, 1.28%)</title><rect x="987.4" y="289" width="15.1" height="15.0" fill="rgb(250,64,17)" rx="2" ry="2" />
+<text text-anchor="" x="990.42" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (2,826 samples, 22.47%)</title><rect x="469.6" y="385" width="265.1" height="15.0" fill="rgb(252,39,13)" rx="2" ry="2" />
+<text text-anchor="" x="472.58" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:182</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (903 samples, 7.18%)</title><rect x="1105.3" y="241" width="84.7" height="15.0" fill="rgb(231,56,51)" rx="2" ry="2" />
+<text text-anchor="" x="1108.27" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_lin..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse:states.py:480 (223 samples, 1.77%)</title><rect x="1081.0" y="33" width="20.9" height="15.0" fill="rgb(236,90,9)" rx="2" ry="2" />
+<text text-anchor="" x="1083.97" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (3,119 samples, 24.80%)</title><rect x="442.1" y="529" width="292.6" height="15.0" fill="rgb(241,36,3)" rx="2" ry="2" />
+<text text-anchor="" x="445.08" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsection:states.py:376</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (548 samples, 4.36%)</title><rect x="935.0" y="257" width="51.4" height="15.0" fill="rgb(230,215,24)" rx="2" ry="2" />
+<text text-anchor="" x="937.97" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>read_doc:environment.py:692 (12,576 samples, 100.00%)</title><rect x="10.0" y="689" width="1180.0" height="15.0" fill="rgb(235,134,36)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="699.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >read_doc:environment.py:692</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (170 samples, 1.35%)</title><rect x="537.0" y="289" width="16.0" height="15.0" fill="rgb(221,158,27)" rx="2" ry="2" />
+<text text-anchor="" x="540.04" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (233 samples, 1.85%)</title><rect x="1168.1" y="65" width="21.9" height="15.0" fill="rgb(247,184,24)" rx="2" ry="2" />
+<text text-anchor="" x="1171.14" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (744 samples, 5.92%)</title><rect x="1032.1" y="129" width="69.8" height="15.0" fill="rgb(210,57,3)" rx="2" ry="2" />
+<text text-anchor="" x="1035.08" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:sta..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (1,590 samples, 12.64%)</title><rect x="585.6" y="305" width="149.1" height="15.0" fill="rgb(217,193,17)" rx="2" ry="2" />
+<text text-anchor="" x="588.55" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsection:stat..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apply_transforms:__init__.py:159 (2,172 samples, 17.27%)</title><rect x="207.3" y="641" width="203.8" height="15.0" fill="rgb(227,181,32)" rx="2" ry="2" />
+<text text-anchor="" x="210.32" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apply_transforms:__init__...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2729 (281 samples, 2.23%)</title><rect x="1075.5" y="81" width="26.4" height="15.0" fill="rgb(236,87,14)" rx="2" ry="2" />
+<text text-anchor="" x="1078.53" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >t..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:957 (184 samples, 1.46%)</title><rect x="798.7" y="337" width="17.3" height="15.0" fill="rgb(211,17,44)" rx="2" ry="2" />
+<text text-anchor="" x="801.73" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (3,120 samples, 24.81%)</title><rect x="442.0" y="545" width="292.7" height="15.0" fill="rgb(234,107,12)" rx="2" ry="2" />
+<text text-anchor="" x="444.99" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:states.py:324</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (232 samples, 1.84%)</title><rect x="1168.2" y="49" width="21.8" height="15.0" fill="rgb(206,149,51)" rx="2" ry="2" />
+<text text-anchor="" x="1171.23" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (177 samples, 1.41%)</title><rect x="777.7" y="353" width="16.6" height="15.0" fill="rgb(226,77,13)" rx="2" ry="2" />
+<text text-anchor="" x="780.71" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (695 samples, 5.53%)</title><rect x="1036.7" y="97" width="65.2" height="15.0" fill="rgb(208,116,6)" rx="2" ry="2" />
+<text text-anchor="" x="1039.68" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_l..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (2,826 samples, 22.47%)</title><rect x="469.6" y="369" width="265.1" height="15.0" fill="rgb(228,213,20)" rx="2" ry="2" />
+<text text-anchor="" x="472.58" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.py:184</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (128 samples, 1.02%)</title><rect x="1143.4" y="65" width="12.0" height="15.0" fill="rgb(227,3,0)" rx="2" ry="2" />
+<text text-anchor="" x="1146.37" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_settings:core.py:118 (137 samples, 1.09%)</title><rect x="192.0" y="657" width="12.9" height="15.0" fill="rgb(241,18,24)" rx="2" ry="2" />
+<text text-anchor="" x="195.03" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (827 samples, 6.58%)</title><rect x="816.0" y="385" width="77.6" height="15.0" fill="rgb(247,201,23)" rx="2" ry="2" />
+<text text-anchor="" x="819.00" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:stat..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2602 (260 samples, 2.07%)</title><rect x="1165.6" y="129" width="24.4" height="15.0" fill="rgb(238,98,17)" rx="2" ry="2" />
+<text text-anchor="" x="1168.60" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (725 samples, 5.76%)</title><rect x="825.6" y="273" width="68.0" height="15.0" fill="rgb(248,157,10)" rx="2" ry="2" />
+<text text-anchor="" x="828.57" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:__i..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bullet:states.py:1230 (728 samples, 5.79%)</title><rect x="611.0" y="225" width="68.3" height="15.0" fill="rgb(228,173,40)" rx="2" ry="2" />
+<text text-anchor="" x="613.98" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bullet:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>dispatch_visit:nodes.py:1871 (153 samples, 1.22%)</title><rect x="378.9" y="593" width="14.4" height="15.0" fill="rgb(239,188,8)" rx="2" ry="2" />
+<text text-anchor="" x="381.94" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>read:io.py:37 (8,301 samples, 66.01%)</title><rect x="411.1" y="657" width="778.9" height="15.0" fill="rgb(241,88,25)" rx="2" ry="2" />
+<text text-anchor="" x="414.12" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >read:io.py:37</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (3,110 samples, 24.73%)</title><rect x="442.9" y="481" width="291.8" height="15.0" fill="rgb(245,51,13)" rx="2" ry="2" />
+<text text-anchor="" x="445.93" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.py:184</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>publish:core.py:201 (10,499 samples, 83.48%)</title><rect x="204.9" y="673" width="985.1" height="15.0" fill="rgb(237,217,10)" rx="2" ry="2" />
+<text text-anchor="" x="207.88" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >publish:core.py:201</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (263 samples, 2.09%)</title><rect x="961.7" y="129" width="24.7" height="15.0" fill="rgb(238,120,37)" rx="2" ry="2" />
+<text text-anchor="" x="964.71" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (1,533 samples, 12.19%)</title><rect x="590.9" y="273" width="143.8" height="15.0" fill="rgb(249,66,39)" rx="2" ry="2" />
+<text text-anchor="" x="593.90" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:182</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (194 samples, 1.54%)</title><rect x="1137.2" y="161" width="18.2" height="15.0" fill="rgb(214,27,34)" rx="2" ry="2" />
+<text text-anchor="" x="1140.17" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_states:statemachine.py:480 (159 samples, 1.26%)</title><rect x="987.6" y="273" width="14.9" height="15.0" fill="rgb(229,220,15)" rx="2" ry="2" />
+<text text-anchor="" x="990.61" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inline_text:states.py:423 (189 samples, 1.50%)</title><rect x="875.9" y="161" width="17.7" height="15.0" fill="rgb(211,157,1)" rx="2" ry="2" />
+<text text-anchor="" x="878.86" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (2,859 samples, 22.73%)</title><rect x="466.5" y="417" width="268.2" height="15.0" fill="rgb(219,133,22)" rx="2" ry="2" />
+<text text-anchor="" x="469.48" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsection:states.py:376</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (197 samples, 1.57%)</title><rect x="1171.5" y="33" width="18.5" height="15.0" fill="rgb(245,159,34)" rx="2" ry="2" />
+<text text-anchor="" x="1174.52" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (174 samples, 1.38%)</title><rect x="778.0" y="321" width="16.3" height="15.0" fill="rgb(226,29,31)" rx="2" ry="2" />
+<text text-anchor="" x="780.99" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bullet:states.py:1230 (192 samples, 1.53%)</title><rect x="484.5" y="337" width="18.0" height="15.0" fill="rgb(249,47,34)" rx="2" ry="2" />
+<text text-anchor="" x="487.50" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (541 samples, 4.30%)</title><rect x="842.8" y="241" width="50.8" height="15.0" fill="rgb(226,182,16)" rx="2" ry="2" />
+<text text-anchor="" x="845.83" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build_update:__init__.py:242 (12,576 samples, 100.00%)</title><rect x="10.0" y="753" width="1180.0" height="15.0" fill="rgb(207,26,34)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="763.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >build_update:__init__.py:242</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (253 samples, 2.01%)</title><rect x="962.7" y="65" width="23.7" height="15.0" fill="rgb(248,70,15)" rx="2" ry="2" />
+<text text-anchor="" x="965.65" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_programmatic_settings:core.py:132 (138 samples, 1.10%)</title><rect x="191.9" y="673" width="13.0" height="15.0" fill="rgb(208,145,26)" rx="2" ry="2" />
+<text text-anchor="" x="194.94" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_states:statemachine.py:480 (226 samples, 1.80%)</title><rect x="515.8" y="273" width="21.2" height="15.0" fill="rgb(235,13,47)" rx="2" ry="2" />
+<text text-anchor="" x="518.83" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (1,533 samples, 12.19%)</title><rect x="590.9" y="257" width="143.8" height="15.0" fill="rgb(249,50,12)" rx="2" ry="2" />
+<text text-anchor="" x="593.90" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (169 samples, 1.34%)</title><rect x="537.1" y="273" width="15.9" height="15.0" fill="rgb(210,63,16)" rx="2" ry="2" />
+<text text-anchor="" x="540.13" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>underline:states.py:2689 (939 samples, 7.47%)</title><rect x="1101.9" y="337" width="88.1" height="15.0" fill="rgb(243,19,30)" rx="2" ry="2" />
+<text text-anchor="" x="1104.89" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >underline:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (170 samples, 1.35%)</title><rect x="778.4" y="305" width="15.9" height="15.0" fill="rgb(230,76,34)" rx="2" ry="2" />
+<text text-anchor="" x="781.37" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (1,052 samples, 8.37%)</title><rect x="794.9" y="417" width="98.7" height="15.0" fill="rgb(244,55,7)" rx="2" ry="2" />
+<text text-anchor="" x="797.88" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_list..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build_main:__init__.py:54 (12,576 samples, 100.00%)</title><rect x="10.0" y="801" width="1180.0" height="15.0" fill="rgb(227,16,9)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="811.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >build_main:__init__.py:54</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>underline:states.py:2689 (4,852 samples, 38.58%)</title><rect x="734.7" y="561" width="455.3" height="15.0" fill="rgb(228,132,20)" rx="2" ry="2" />
+<text text-anchor="" x="737.74" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >underline:states.py:2689</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (910 samples, 7.24%)</title><rect x="1104.6" y="257" width="85.4" height="15.0" fill="rgb(236,134,32)" rx="2" ry="2" />
+<text text-anchor="" x="1107.62" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statem..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (519 samples, 4.13%)</title><rect x="937.7" y="209" width="48.7" height="15.0" fill="rgb(225,82,44)" rx="2" ry="2" />
+<text text-anchor="" x="940.69" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build_toc:environment.py:1149 (228 samples, 1.81%)</title><rect x="170.5" y="657" width="21.4" height="15.0" fill="rgb(205,29,10)" rx="2" ry="2" />
+<text text-anchor="" x="173.54" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >b..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (744 samples, 5.92%)</title><rect x="1032.1" y="145" width="69.8" height="15.0" fill="rgb(230,123,27)" rx="2" ry="2" />
+<text text-anchor="" x="1035.08" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_states:statemachine.py:480 (222 samples, 1.77%)</title><rect x="795.2" y="385" width="20.8" height="15.0" fill="rgb(240,84,33)" rx="2" ry="2" />
+<text text-anchor="" x="798.17" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (135 samples, 1.07%)</title><rect x="453.3" y="433" width="12.7" height="15.0" fill="rgb(211,93,30)" rx="2" ry="2" />
+<text text-anchor="" x="456.34" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (225 samples, 1.79%)</title><rect x="686.4" y="209" width="21.1" height="15.0" fill="rgb(241,81,25)" rx="2" ry="2" />
+<text text-anchor="" x="689.42" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (572 samples, 4.55%)</title><rect x="625.6" y="161" width="53.7" height="15.0" fill="rgb(229,188,17)" rx="2" ry="2" />
+<text text-anchor="" x="628.62" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2602 (1,042 samples, 8.29%)</title><rect x="1004.1" y="241" width="97.8" height="15.0" fill="rgb(218,96,47)" rx="2" ry="2" />
+<text text-anchor="" x="1007.12" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_ma..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (576 samples, 4.58%)</title><rect x="625.2" y="193" width="54.1" height="15.0" fill="rgb(243,59,0)" rx="2" ry="2" />
+<text text-anchor="" x="628.24" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>update:environment.py:476 (12,576 samples, 100.00%)</title><rect x="10.0" y="721" width="1180.0" height="15.0" fill="rgb(208,54,47)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="731.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >update:environment.py:476</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (519 samples, 4.13%)</title><rect x="937.7" y="241" width="48.7" height="15.0" fill="rgb(219,88,41)" rx="2" ry="2" />
+<text text-anchor="" x="940.69" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nest..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (524 samples, 4.17%)</title><rect x="630.1" y="97" width="49.2" height="15.0" fill="rgb(237,187,33)" rx="2" ry="2" />
+<text text-anchor="" x="633.12" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (1,591 samples, 12.65%)</title><rect x="585.5" y="321" width="149.2" height="15.0" fill="rgb(235,185,20)" rx="2" ry="2" />
+<text text-anchor="" x="588.46" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:states.py:324</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_initial_transitions:statemachine.py:645 (133 samples, 1.06%)</title><rect x="803.5" y="289" width="12.5" height="15.0" fill="rgb(245,193,31)" rx="2" ry="2" />
+<text text-anchor="" x="806.52" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (523 samples, 4.16%)</title><rect x="630.2" y="81" width="49.1" height="15.0" fill="rgb(214,210,51)" rx="2" ry="2" />
+<text text-anchor="" x="633.21" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2903 (3,122 samples, 24.83%)</title><rect x="441.8" y="561" width="292.9" height="15.0" fill="rgb(245,119,5)" rx="2" ry="2" />
+<text text-anchor="" x="444.80" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >text:states.py:2903</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main:cmdline.py:58 (12,576 samples, 100.00%)</title><rect x="10.0" y="785" width="1180.0" height="15.0" fill="rgb(209,166,34)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="795.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main:cmdline.py:58</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (2,859 samples, 22.73%)</title><rect x="466.5" y="433" width="268.2" height="15.0" fill="rgb(241,6,13)" rx="2" ry="2" />
+<text text-anchor="" x="469.48" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:states.py:324</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (541 samples, 4.30%)</title><rect x="842.8" y="225" width="50.8" height="15.0" fill="rgb(216,226,50)" rx="2" ry="2" />
+<text text-anchor="" x="845.83" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bullet:states.py:2474 (572 samples, 4.55%)</title><rect x="625.6" y="145" width="53.7" height="15.0" fill="rgb(228,166,48)" rx="2" ry="2" />
+<text text-anchor="" x="628.62" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bulle..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (155 samples, 1.23%)</title><rect x="488.0" y="289" width="14.5" height="15.0" fill="rgb(230,62,5)" rx="2" ry="2" />
+<text text-anchor="" x="490.97" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (519 samples, 4.13%)</title><rect x="937.7" y="225" width="48.7" height="15.0" fill="rgb(222,86,6)" rx="2" ry="2" />
+<text text-anchor="" x="940.69" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:94 (124 samples, 0.99%)</title><rect x="541.4" y="161" width="11.6" height="15.0" fill="rgb(229,28,2)" rx="2" ry="2" />
+<text text-anchor="" x="544.36" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:states.py:212 (213 samples, 1.69%)</title><rect x="796.0" y="353" width="20.0" height="15.0" fill="rgb(248,226,41)" rx="2" ry="2" />
+<text text-anchor="" x="799.01" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (3,137 samples, 24.94%)</title><rect x="895.7" y="401" width="294.3" height="15.0" fill="rgb(230,78,40)" rx="2" ry="2" />
+<text text-anchor="" x="898.66" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_parse:states.py:257</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (125 samples, 0.99%)</title><rect x="541.3" y="177" width="11.7" height="15.0" fill="rgb(230,226,50)" rx="2" ry="2" />
+<text text-anchor="" x="544.26" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_initial_transitions:statemachine.py:645 (132 samples, 1.05%)</title><rect x="524.7" y="177" width="12.3" height="15.0" fill="rgb(221,118,27)" rx="2" ry="2" />
+<text text-anchor="" x="527.65" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse:__init__.py:75 (8,232 samples, 65.46%)</title><rect x="417.6" y="641" width="772.4" height="15.0" fill="rgb(231,188,49)" rx="2" ry="2" />
+<text text-anchor="" x="420.60" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >parse:__init__.py:75</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (814 samples, 6.47%)</title><rect x="817.2" y="369" width="76.4" height="15.0" fill="rgb(222,99,46)" rx="2" ry="2" />
+<text text-anchor="" x="820.22" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_li..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (3,137 samples, 24.94%)</title><rect x="895.7" y="385" width="294.3" height="15.0" fill="rgb(240,41,1)" rx="2" ry="2" />
+<text text-anchor="" x="898.66" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:182</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (369 samples, 2.93%)</title><rect x="759.7" y="401" width="34.6" height="15.0" fill="rgb(217,71,38)" rx="2" ry="2" />
+<text text-anchor="" x="762.70" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ru..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (744 samples, 5.92%)</title><rect x="1032.1" y="113" width="69.8" height="15.0" fill="rgb(231,217,24)" rx="2" ry="2" />
+<text text-anchor="" x="1035.08" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:sta..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (626 samples, 4.98%)</title><rect x="927.7" y="305" width="58.7" height="15.0" fill="rgb(253,55,21)" rx="2" ry="2" />
+<text text-anchor="" x="930.65" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >direct..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (827 samples, 6.58%)</title><rect x="816.0" y="401" width="77.6" height="15.0" fill="rgb(214,27,34)" rx="2" ry="2" />
+<text text-anchor="" x="819.00" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:stat..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build_toc_from:environment.py:1134 (231 samples, 1.84%)</title><rect x="170.3" y="673" width="21.6" height="15.0" fill="rgb(253,96,54)" rx="2" ry="2" />
+<text text-anchor="" x="173.26" y="683.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >b..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (1,058 samples, 8.41%)</title><rect x="1002.6" y="273" width="99.3" height="15.0" fill="rgb(234,141,7)" rx="2" ry="2" />
+<text text-anchor="" x="1005.62" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemac..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (507 samples, 4.03%)</title><rect x="938.8" y="193" width="47.6" height="15.0" fill="rgb(206,201,30)" rx="2" ry="2" />
+<text text-anchor="" x="941.82" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >chec..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (930 samples, 7.40%)</title><rect x="1102.7" y="321" width="87.3" height="15.0" fill="rgb(224,145,29)" rx="2" ry="2" />
+<text text-anchor="" x="1105.74" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:st..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (323 samples, 2.57%)</title><rect x="956.1" y="161" width="30.3" height="15.0" fill="rgb(252,2,20)" rx="2" ry="2" />
+<text text-anchor="" x="959.08" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apply:transforms.py:167 (190 samples, 1.51%)</title><rect x="393.3" y="625" width="17.8" height="15.0" fill="rgb(248,16,41)" rx="2" ry="2" />
+<text text-anchor="" x="396.29" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (2,805 samples, 22.30%)</title><rect x="471.5" y="353" width="263.2" height="15.0" fill="rgb(248,79,34)" rx="2" ry="2" />
+<text text-anchor="" x="474.55" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statemachine.py:424</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>underline:states.py:2689 (2,864 samples, 22.77%)</title><rect x="466.0" y="449" width="268.7" height="15.0" fill="rgb(239,23,9)" rx="2" ry="2" />
+<text text-anchor="" x="469.01" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >underline:states.py:2689</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (400 samples, 3.18%)</title><rect x="515.5" y="305" width="37.5" height="15.0" fill="rgb(234,172,21)" rx="2" ry="2" />
+<text text-anchor="" x="518.46" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nes..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (134 samples, 1.07%)</title><rect x="453.4" y="417" width="12.6" height="15.0" fill="rgb(221,68,21)" rx="2" ry="2" />
+<text text-anchor="" x="456.44" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse:states.py:480 (254 samples, 2.02%)</title><rect x="561.2" y="289" width="23.8" height="15.0" fill="rgb(252,65,53)" rx="2" ry="2" />
+<text text-anchor="" x="564.15" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (263 samples, 2.09%)</title><rect x="961.7" y="113" width="24.7" height="15.0" fill="rgb(235,58,24)" rx="2" ry="2" />
+<text text-anchor="" x="964.71" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (576 samples, 4.58%)</title><rect x="625.2" y="177" width="54.1" height="15.0" fill="rgb(236,214,47)" rx="2" ry="2" />
+<text text-anchor="" x="628.24" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (209 samples, 1.66%)</title><rect x="1135.8" y="193" width="19.6" height="15.0" fill="rgb(249,183,4)" rx="2" ry="2" />
+<text text-anchor="" x="1138.77" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (257 samples, 2.04%)</title><rect x="1051.4" y="49" width="24.1" height="15.0" fill="rgb(238,111,26)" rx="2" ry="2" />
+<text text-anchor="" x="1054.41" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_initial_transitions:statemachine.py:973 (184 samples, 1.46%)</title><rect x="519.8" y="193" width="17.2" height="15.0" fill="rgb(234,133,2)" rx="2" ry="2" />
+<text text-anchor="" x="522.78" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (1,231 samples, 9.79%)</title><rect x="986.4" y="321" width="115.5" height="15.0" fill="rgb(246,85,21)" rx="2" ry="2" />
+<text text-anchor="" x="989.39" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_list:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build:application.py:288 (12,576 samples, 100.00%)</title><rect x="10.0" y="769" width="1180.0" height="15.0" fill="rgb(235,212,8)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="779.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >build:application.py:288</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (186 samples, 1.48%)</title><rect x="1137.9" y="97" width="17.5" height="15.0" fill="rgb(206,79,45)" rx="2" ry="2" />
+<text text-anchor="" x="1140.92" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2729 (290 samples, 2.31%)</title><rect x="707.5" y="225" width="27.2" height="15.0" fill="rgb(237,35,46)" rx="2" ry="2" />
+<text text-anchor="" x="710.53" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >t..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (149 samples, 1.18%)</title><rect x="539.0" y="209" width="14.0" height="15.0" fill="rgb(250,128,32)" rx="2" ry="2" />
+<text text-anchor="" x="542.01" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (372 samples, 2.96%)</title><rect x="759.4" y="417" width="34.9" height="15.0" fill="rgb(238,127,41)" rx="2" ry="2" />
+<text text-anchor="" x="762.42" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >di..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (4,845 samples, 38.53%)</title><rect x="735.4" y="529" width="454.6" height="15.0" fill="rgb(219,5,40)" rx="2" ry="2" />
+<text text-anchor="" x="738.40" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsection:states.py:376</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (158 samples, 1.26%)</title><rect x="538.2" y="257" width="14.8" height="15.0" fill="rgb(218,14,46)" rx="2" ry="2" />
+<text text-anchor="" x="541.17" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2729 (387 samples, 3.08%)</title><rect x="643.0" y="49" width="36.3" height="15.0" fill="rgb(245,3,13)" rx="2" ry="2" />
+<text text-anchor="" x="645.97" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >tex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (150 samples, 1.19%)</title><rect x="1061.5" y="33" width="14.0" height="15.0" fill="rgb(228,7,40)" rx="2" ry="2" />
+<text text-anchor="" x="1064.45" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (910 samples, 7.24%)</title><rect x="1104.6" y="273" width="85.4" height="15.0" fill="rgb(206,221,16)" rx="2" ry="2" />
+<text text-anchor="" x="1107.62" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>paragraph:states.py:402 (255 samples, 2.03%)</title><rect x="710.8" y="209" width="23.9" height="15.0" fill="rgb(210,158,6)" rx="2" ry="2" />
+<text text-anchor="" x="713.81" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inline_text:states.py:423 (225 samples, 1.79%)</title><rect x="713.6" y="193" width="21.1" height="15.0" fill="rgb(207,91,15)" rx="2" ry="2" />
+<text text-anchor="" x="716.63" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (555 samples, 4.41%)</title><rect x="934.3" y="273" width="52.1" height="15.0" fill="rgb(205,121,1)" rx="2" ry="2" />
+<text text-anchor="" x="937.31" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2602 (156 samples, 1.24%)</title><rect x="538.4" y="241" width="14.6" height="15.0" fill="rgb(245,43,3)" rx="2" ry="2" />
+<text text-anchor="" x="541.35" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (213 samples, 1.69%)</title><rect x="1135.4" y="209" width="20.0" height="15.0" fill="rgb(235,118,18)" rx="2" ry="2" />
+<text text-anchor="" x="1138.39" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (640 samples, 5.09%)</title><rect x="619.2" y="209" width="60.1" height="15.0" fill="rgb(234,6,10)" rx="2" ry="2" />
+<text text-anchor="" x="622.24" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (538 samples, 4.28%)</title><rect x="502.5" y="337" width="50.5" height="15.0" fill="rgb(244,111,26)" rx="2" ry="2" />
+<text text-anchor="" x="505.51" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >expli..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (1,059 samples, 8.42%)</title><rect x="1002.5" y="289" width="99.4" height="15.0" fill="rgb(233,1,45)" rx="2" ry="2" />
+<text text-anchor="" x="1005.53" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (543 samples, 4.32%)</title><rect x="842.6" y="257" width="51.0" height="15.0" fill="rgb(206,91,1)" rx="2" ry="2" />
+<text text-anchor="" x="845.64" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >neste..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (626 samples, 4.98%)</title><rect x="927.7" y="289" width="58.7" height="15.0" fill="rgb(249,72,19)" rx="2" ry="2" />
+<text text-anchor="" x="930.65" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run_di..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (269 samples, 2.14%)</title><rect x="1164.8" y="161" width="25.2" height="15.0" fill="rgb(212,158,4)" rx="2" ry="2" />
+<text text-anchor="" x="1167.76" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>paragraph:states.py:402 (374 samples, 2.97%)</title><rect x="644.2" y="33" width="35.1" height="15.0" fill="rgb(232,81,37)" rx="2" ry="2" />
+<text text-anchor="" x="647.19" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (375 samples, 2.98%)</title><rect x="759.1" y="433" width="35.2" height="15.0" fill="rgb(215,116,31)" rx="2" ry="2" />
+<text text-anchor="" x="762.13" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (155 samples, 1.23%)</title><rect x="488.0" y="305" width="14.5" height="15.0" fill="rgb(247,5,3)" rx="2" ry="2" />
+<text text-anchor="" x="490.97" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_read_serial:environment.py:578 (12,576 samples, 100.00%)</title><rect x="10.0" y="705" width="1180.0" height="15.0" fill="rgb(225,210,19)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="715.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_read_serial:environment.py:578</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (322 samples, 2.56%)</title><rect x="956.2" y="145" width="30.2" height="15.0" fill="rgb(239,118,49)" rx="2" ry="2" />
+<text text-anchor="" x="959.18" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ne..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (259 samples, 2.06%)</title><rect x="1165.7" y="113" width="24.3" height="15.0" fill="rgb(212,95,44)" rx="2" ry="2" />
+<text text-anchor="" x="1168.70" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>section:states.py:324 (3,157 samples, 25.10%)</title><rect x="893.8" y="433" width="296.2" height="15.0" fill="rgb(228,161,13)" rx="2" ry="2" />
+<text text-anchor="" x="896.78" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >section:states.py:324</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (3,111 samples, 24.74%)</title><rect x="442.8" y="513" width="291.9" height="15.0" fill="rgb(218,71,0)" rx="2" ry="2" />
+<text text-anchor="" x="445.84" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_parse:states.py:257</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (958 samples, 7.62%)</title><rect x="1012.0" y="177" width="89.9" height="15.0" fill="rgb(228,33,36)" rx="2" ry="2" />
+<text text-anchor="" x="1015.01" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:__init..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:144 (8,074 samples, 64.20%)</title><rect x="432.4" y="609" width="757.6" height="15.0" fill="rgb(217,18,8)" rx="2" ry="2" />
+<text text-anchor="" x="435.42" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:144</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (188 samples, 1.49%)</title><rect x="1137.7" y="113" width="17.7" height="15.0" fill="rgb(225,199,27)" rx="2" ry="2" />
+<text text-anchor="" x="1140.74" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse:states.py:480 (225 samples, 1.79%)</title><rect x="713.6" y="177" width="21.1" height="15.0" fill="rgb(223,43,52)" rx="2" ry="2" />
+<text text-anchor="" x="716.63" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (912 samples, 7.25%)</title><rect x="1104.4" y="289" width="85.6" height="15.0" fill="rgb(221,227,32)" rx="2" ry="2" />
+<text text-anchor="" x="1107.43" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_par..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:frontend.py:537 (137 samples, 1.09%)</title><rect x="192.0" y="625" width="12.9" height="15.0" fill="rgb(212,139,19)" rx="2" ry="2" />
+<text text-anchor="" x="195.03" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (4,829 samples, 38.40%)</title><rect x="736.9" y="481" width="453.1" height="15.0" fill="rgb(237,126,39)" rx="2" ry="2" />
+<text text-anchor="" x="739.90" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.py:184</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (3,110 samples, 24.73%)</title><rect x="442.9" y="497" width="291.8" height="15.0" fill="rgb(247,141,42)" rx="2" ry="2" />
+<text text-anchor="" x="445.93" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:182</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (806 samples, 6.41%)</title><rect x="818.0" y="337" width="75.6" height="15.0" fill="rgb(207,39,34)" rx="2" ry="2" />
+<text text-anchor="" x="820.97" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (127 samples, 1.01%)</title><rect x="860.3" y="161" width="11.9" height="15.0" fill="rgb(240,206,32)" rx="2" ry="2" />
+<text text-anchor="" x="863.28" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (254 samples, 2.02%)</title><rect x="1166.2" y="81" width="23.8" height="15.0" fill="rgb(253,94,1)" rx="2" ry="2" />
+<text text-anchor="" x="1169.17" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>build:__init__.py:253 (12,576 samples, 100.00%)</title><rect x="10.0" y="737" width="1180.0" height="15.0" fill="rgb(227,5,20)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="747.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >build:__init__.py:253</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (582 samples, 4.63%)</title><rect x="1135.4" y="225" width="54.6" height="15.0" fill="rgb(242,203,51)" rx="2" ry="2" />
+<text text-anchor="" x="1138.39" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >expli..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>paragraph:states.py:402 (215 samples, 1.71%)</title><rect x="873.4" y="177" width="20.2" height="15.0" fill="rgb(244,91,35)" rx="2" ry="2" />
+<text text-anchor="" x="876.42" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bullet:states.py:2474 (151 samples, 1.20%)</title><rect x="488.3" y="257" width="14.2" height="15.0" fill="rgb(211,53,49)" rx="2" ry="2" />
+<text text-anchor="" x="491.34" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (257 samples, 2.04%)</title><rect x="1165.9" y="97" width="24.1" height="15.0" fill="rgb(207,214,6)" rx="2" ry="2" />
+<text text-anchor="" x="1168.89" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >d..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>list_item:states.py:1248 (571 samples, 4.54%)</title><rect x="625.7" y="129" width="53.6" height="15.0" fill="rgb(237,151,50)" rx="2" ry="2" />
+<text text-anchor="" x="628.71" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >list_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (1,534 samples, 12.20%)</title><rect x="590.8" y="289" width="143.9" height="15.0" fill="rgb(208,88,2)" rx="2" ry="2" />
+<text text-anchor="" x="593.80" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_parse:state..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apply:references.py:837 (417 samples, 3.32%)</title><rect x="354.2" y="625" width="39.1" height="15.0" fill="rgb(251,200,7)" rx="2" ry="2" />
+<text text-anchor="" x="357.17" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >app..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (4,829 samples, 38.40%)</title><rect x="736.9" y="497" width="453.1" height="15.0" fill="rgb(221,228,50)" rx="2" ry="2" />
+<text text-anchor="" x="739.90" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:states.py:182</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (182 samples, 1.45%)</title><rect x="1138.3" y="81" width="17.1" height="15.0" fill="rgb(243,42,40)" rx="2" ry="2" />
+<text text-anchor="" x="1141.30" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (250 samples, 1.99%)</title><rect x="962.9" y="33" width="23.5" height="15.0" fill="rgb(242,49,38)" rx="2" ry="2" />
+<text text-anchor="" x="965.93" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_state:statemachine.py:468 (220 samples, 1.75%)</title><rect x="795.4" y="369" width="20.6" height="15.0" fill="rgb(241,140,36)" rx="2" ry="2" />
+<text text-anchor="" x="798.35" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (1,434 samples, 11.40%)</title><rect x="759.0" y="449" width="134.6" height="15.0" fill="rgb(223,29,35)" rx="2" ry="2" />
+<text text-anchor="" x="762.04" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_markup:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>traverse:nodes.py:207 (505 samples, 4.02%)</title><rect x="306.8" y="593" width="47.4" height="15.0" fill="rgb(241,84,51)" rx="2" ry="2" />
+<text text-anchor="" x="309.78" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >trav..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (338 samples, 2.69%)</title><rect x="1043.8" y="81" width="31.7" height="15.0" fill="rgb(210,101,10)" rx="2" ry="2" />
+<text text-anchor="" x="1046.81" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (801 samples, 6.37%)</title><rect x="818.4" y="321" width="75.2" height="15.0" fill="rgb(244,66,15)" rx="2" ry="2" />
+<text text-anchor="" x="821.44" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >directiv..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (176 samples, 1.40%)</title><rect x="777.8" y="337" width="16.5" height="15.0" fill="rgb(230,72,3)" rx="2" ry="2" />
+<text text-anchor="" x="780.81" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>(module):sphinx-build:4 (12,576 samples, 100.00%)</title><rect x="10.0" y="833" width="1180.0" height="15.0" fill="rgb(222,80,6)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="843.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >(module):sphinx-build:4</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:957 (146 samples, 1.16%)</title><rect x="988.8" y="225" width="13.7" height="15.0" fill="rgb(228,139,50)" rx="2" ry="2" />
+<text text-anchor="" x="991.83" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (159 samples, 1.26%)</title><rect x="451.1" y="449" width="14.9" height="15.0" fill="rgb(249,42,21)" rx="2" ry="2" />
+<text text-anchor="" x="454.09" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>underline:states.py:2689 (3,159 samples, 25.12%)</title><rect x="893.6" y="449" width="296.4" height="15.0" fill="rgb(227,58,11)" rx="2" ry="2" />
+<text text-anchor="" x="896.59" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >underline:states.py:2689</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:statemachine.py:184 (8,067 samples, 64.15%)</title><rect x="433.1" y="593" width="756.9" height="15.0" fill="rgb(246,72,4)" rx="2" ry="2" />
+<text text-anchor="" x="436.08" y="603.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run:statemachine.py:184</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setup_option_parser:core.py:101 (137 samples, 1.09%)</title><rect x="192.0" y="641" width="12.9" height="15.0" fill="rgb(237,60,7)" rx="2" ry="2" />
+<text text-anchor="" x="195.03" y="651.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (1,035 samples, 8.23%)</title><rect x="1004.8" y="209" width="97.1" height="15.0" fill="rgb(241,87,14)" rx="2" ry="2" />
+<text text-anchor="" x="1007.78" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >directive:s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>walk:nodes.py:101 (320 samples, 2.54%)</title><rect x="363.3" y="609" width="30.0" height="15.0" fill="rgb(246,187,8)" rx="2" ry="2" />
+<text text-anchor="" x="366.27" y="619.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >wa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inline_text:states.py:423 (254 samples, 2.02%)</title><rect x="561.2" y="305" width="23.8" height="15.0" fill="rgb(241,130,32)" rx="2" ry="2" />
+<text text-anchor="" x="564.15" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >i..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (1,514 samples, 12.04%)</title><rect x="592.7" y="241" width="142.0" height="15.0" fill="rgb(206,203,26)" rx="2" ry="2" />
+<text text-anchor="" x="595.68" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statema..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (3,124 samples, 24.84%)</title><rect x="896.9" y="353" width="293.1" height="15.0" fill="rgb(228,67,49)" rx="2" ry="2" />
+<text text-anchor="" x="899.88" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statemachine.py:424</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apply_transforms:core.py:195 (2,193 samples, 17.44%)</title><rect x="205.4" y="657" width="205.7" height="15.0" fill="rgb(248,184,23)" rx="2" ry="2" />
+<text text-anchor="" x="208.35" y="667.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apply_transforms:core.py:195</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (490 samples, 3.90%)</title><rect x="847.6" y="209" width="46.0" height="15.0" fill="rgb(249,9,12)" rx="2" ry="2" />
+<text text-anchor="" x="850.62" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >chec..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>text:states.py:2729 (228 samples, 1.81%)</title><rect x="872.2" y="193" width="21.4" height="15.0" fill="rgb(214,107,2)" rx="2" ry="2" />
+<text text-anchor="" x="875.20" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >t..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apply:references.py:42 (571 samples, 4.54%)</title><rect x="300.6" y="625" width="53.6" height="15.0" fill="rgb(205,3,9)" rx="2" ry="2" />
+<text text-anchor="" x="303.59" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >apply..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (132 samples, 1.05%)</title><rect x="502.7" y="321" width="12.4" height="15.0" fill="rgb(231,5,29)" rx="2" ry="2" />
+<text text-anchor="" x="505.70" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:957 (196 samples, 1.56%)</title><rect x="518.6" y="225" width="18.4" height="15.0" fill="rgb(221,149,18)" rx="2" ry="2" />
+<text text-anchor="" x="521.65" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:states.py:182 (269 samples, 2.14%)</title><rect x="1164.8" y="177" width="25.2" height="15.0" fill="rgb(234,8,30)" rx="2" ry="2" />
+<text text-anchor="" x="1167.76" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >r..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tbody:nodes.py:1656 (8,227 samples, 65.42%)</title><rect x="418.1" y="625" width="771.9" height="15.0" fill="rgb(220,212,49)" rx="2" ry="2" />
+<text text-anchor="" x="421.06" y="635.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >tbody:nodes.py:1656</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (528 samples, 4.20%)</title><rect x="629.7" y="113" width="49.6" height="15.0" fill="rgb(231,66,35)" rx="2" ry="2" />
+<text text-anchor="" x="632.74" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nest..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (12,576 samples, 100%)</title><rect x="10.0" y="849" width="1180.0" height="15.0" fill="rgb(209,47,54)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="859.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (220 samples, 1.75%)</title><rect x="686.9" y="193" width="20.6" height="15.0" fill="rgb(205,19,51)" rx="2" ry="2" />
+<text text-anchor="" x="689.89" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (301 samples, 2.39%)</title><rect x="679.3" y="225" width="28.2" height="15.0" fill="rgb(253,3,46)" rx="2" ry="2" />
+<text text-anchor="" x="682.29" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (3,156 samples, 25.10%)</title><rect x="893.9" y="417" width="296.1" height="15.0" fill="rgb(219,106,40)" rx="2" ry="2" />
+<text text-anchor="" x="896.87" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsection:states.py:376</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (1,032 samples, 8.21%)</title><rect x="1005.1" y="193" width="96.8" height="15.0" fill="rgb(240,97,16)" rx="2" ry="2" />
+<text text-anchor="" x="1008.06" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run_directi..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (360 samples, 2.86%)</title><rect x="952.6" y="177" width="33.8" height="15.0" fill="rgb(247,216,32)" rx="2" ry="2" />
+<text text-anchor="" x="955.61" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2297 (169 samples, 1.34%)</title><rect x="856.3" y="193" width="15.9" height="15.0" fill="rgb(247,90,6)" rx="2" ry="2" />
+<text text-anchor="" x="859.34" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_subsection:states.py:376 (929 samples, 7.39%)</title><rect x="1102.8" y="305" width="87.2" height="15.0" fill="rgb(209,149,47)" rx="2" ry="2" />
+<text text-anchor="" x="1105.83" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >new_subsec..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (404 samples, 3.21%)</title><rect x="515.1" y="321" width="37.9" height="15.0" fill="rgb(228,86,28)" rx="2" ry="2" />
+<text text-anchor="" x="518.08" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >exp..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (799 samples, 6.35%)</title><rect x="818.6" y="305" width="75.0" height="15.0" fill="rgb(227,139,44)" rx="2" ry="2" />
+<text text-anchor="" x="821.62" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run_dire..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (128 samples, 1.02%)</title><rect x="860.2" y="177" width="12.0" height="15.0" fill="rgb(226,34,18)" rx="2" ry="2" />
+<text text-anchor="" x="863.19" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (630 samples, 5.01%)</title><rect x="927.3" y="321" width="59.1" height="15.0" fill="rgb(211,217,25)" rx="2" ry="2" />
+<text text-anchor="" x="930.28" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explic..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:131 (223 samples, 1.77%)</title><rect x="795.1" y="401" width="20.9" height="15.0" fill="rgb(227,215,8)" rx="2" ry="2" />
+<text text-anchor="" x="798.07" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (8,051 samples, 64.02%)</title><rect x="434.6" y="577" width="755.4" height="15.0" fill="rgb(228,147,20)" rx="2" ry="2" />
+<text text-anchor="" x="437.58" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statemachine.py:424</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (2,828 samples, 22.49%)</title><rect x="469.4" y="401" width="265.3" height="15.0" fill="rgb(225,26,31)" rx="2" ry="2" />
+<text text-anchor="" x="472.39" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_parse:states.py:257</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inline_text:states.py:423 (224 samples, 1.78%)</title><rect x="1080.9" y="49" width="21.0" height="15.0" fill="rgb(246,69,0)" rx="2" ry="2" />
+<text text-anchor="" x="1083.88" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:states.py:212 (152 samples, 1.21%)</title><rect x="988.3" y="241" width="14.2" height="15.0" fill="rgb(228,220,34)" rx="2" ry="2" />
+<text text-anchor="" x="991.27" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_initial_transitions:statemachine.py:973 (137 samples, 1.09%)</title><rect x="989.7" y="193" width="12.8" height="15.0" fill="rgb(241,43,13)" rx="2" ry="2" />
+<text text-anchor="" x="992.67" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (475 samples, 3.78%)</title><rect x="634.7" y="65" width="44.6" height="15.0" fill="rgb(229,54,50)" rx="2" ry="2" />
+<text text-anchor="" x="637.72" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >chec..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (4,816 samples, 38.30%)</title><rect x="738.1" y="465" width="451.9" height="15.0" fill="rgb(229,225,22)" rx="2" ry="2" />
+<text text-anchor="" x="741.12" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statemachine.py:424</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (264 samples, 2.10%)</title><rect x="1165.2" y="145" width="24.8" height="15.0" fill="rgb(208,14,13)" rx="2" ry="2" />
+<text text-anchor="" x="1168.23" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_markup:states.py:2602 (254 samples, 2.02%)</title><rect x="962.6" y="81" width="23.8" height="15.0" fill="rgb(208,85,2)" rx="2" ry="2" />
+<text text-anchor="" x="965.56" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_construct:states.py:2304 (1,041 samples, 8.28%)</title><rect x="1004.2" y="225" width="97.7" height="15.0" fill="rgb(240,212,43)" rx="2" ry="2" />
+<text text-anchor="" x="1007.22" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_co..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (369 samples, 2.93%)</title><rect x="1155.4" y="209" width="34.6" height="15.0" fill="rgb(206,184,2)" rx="2" ry="2" />
+<text text-anchor="" x="1158.38" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ex..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>explicit_list:states.py:2320 (1,058 samples, 8.41%)</title><rect x="794.3" y="433" width="99.3" height="15.0" fill="rgb(245,41,51)" rx="2" ry="2" />
+<text text-anchor="" x="797.32" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >explicit_lis..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:598 (192 samples, 1.53%)</title><rect x="519.0" y="209" width="18.0" height="15.0" fill="rgb(210,93,6)" rx="2" ry="2" />
+<text text-anchor="" x="522.03" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (151 samples, 1.20%)</title><rect x="488.3" y="273" width="14.2" height="15.0" fill="rgb(226,194,20)" rx="2" ry="2" />
+<text text-anchor="" x="491.34" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_parse:states.py:257 (188 samples, 1.49%)</title><rect x="1137.7" y="129" width="17.7" height="15.0" fill="rgb(248,67,4)" rx="2" ry="2" />
+<text text-anchor="" x="1140.74" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (1,047 samples, 8.33%)</title><rect x="1003.7" y="257" width="98.2" height="15.0" fill="rgb(213,166,34)" rx="2" ry="2" />
+<text text-anchor="" x="1006.65" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>add_state:statemachine.py:468 (224 samples, 1.78%)</title><rect x="516.0" y="257" width="21.0" height="15.0" fill="rgb(217,97,13)" rx="2" ry="2" />
+<text text-anchor="" x="519.02" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>list_item:states.py:1248 (151 samples, 1.20%)</title><rect x="488.3" y="241" width="14.2" height="15.0" fill="rgb(217,155,46)" rx="2" ry="2" />
+<text text-anchor="" x="491.34" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>nested_list_parse:states.py:294 (1,223 samples, 9.72%)</title><rect x="987.1" y="305" width="114.8" height="15.0" fill="rgb(215,116,51)" rx="2" ry="2" />
+<text text-anchor="" x="990.14" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >nested_list_pa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run:__init__.py:195 (201 samples, 1.60%)</title><rect x="775.5" y="385" width="18.8" height="15.0" fill="rgb(228,19,25)" rx="2" ry="2" />
+<text text-anchor="" x="778.46" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>check_line:statemachine.py:424 (3,103 samples, 24.67%)</title><rect x="443.6" y="465" width="291.1" height="15.0" fill="rgb(229,155,43)" rx="2" ry="2" />
+<text text-anchor="" x="446.59" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >check_line:statemachine.py:424</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_all_traverse:nodes.py:199 (487 samples, 3.87%)</title><rect x="308.5" y="577" width="45.7" height="15.0" fill="rgb(239,106,40)" rx="2" ry="2" />
+<text text-anchor="" x="311.47" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_all..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_directive:states.py:2058 (149 samples, 1.18%)</title><rect x="539.0" y="193" width="14.0" height="15.0" fill="rgb(225,27,16)" rx="2" ry="2" />
+<text text-anchor="" x="542.01" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main:__init__.py:47 (12,576 samples, 100.00%)</title><rect x="10.0" y="817" width="1180.0" height="15.0" fill="rgb(215,209,12)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="827.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main:__init__.py:47</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>directive:states.py:2046 (250 samples, 1.99%)</title><rect x="962.9" y="49" width="23.5" height="15.0" fill="rgb(230,142,10)" rx="2" ry="2" />
+<text text-anchor="" x="965.93" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >d..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse:states.py:480 (188 samples, 1.49%)</title><rect x="876.0" y="145" width="17.6" height="15.0" fill="rgb(210,146,0)" rx="2" ry="2" />
+<text text-anchor="" x="878.95" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:598 (144 samples, 1.15%)</title><rect x="989.0" y="209" width="13.5" height="15.0" fill="rgb(223,217,46)" rx="2" ry="2" />
+<text text-anchor="" x="992.02" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_directive_block:states.py:2118 (129 samples, 1.03%)</title><rect x="763.4" y="385" width="12.1" height="15.0" fill="rgb(228,71,12)" rx="2" ry="2" />
+<text text-anchor="" x="766.36" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:states.py:212 (222 samples, 1.77%)</title><rect x="516.2" y="241" width="20.8" height="15.0" fill="rgb(212,65,48)" rx="2" ry="2" />
+<text text-anchor="" x="519.21" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__:statemachine.py:598 (179 samples, 1.42%)</title><rect x="799.2" y="321" width="16.8" height="15.0" fill="rgb(239,47,29)" rx="2" ry="2" />
+<text text-anchor="" x="802.20" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
